@@ -119,10 +119,4 @@ deps/plenary.nvim:
 	@mkdir -p deps
 	git clone --filter=blob:none --depth=1 https://github.com/nvim-lua/plenary.nvim $@
 
-deps/todomvc:
-	@mkdir -p deps
-	git clone --filter=blob:none --depth=1 https://github.com/tastejs/todomvc.git $@
-	cd $@ && git fetch --depth=1 origin 643cab2e0d5154130077df6356e53871f3b0fa84
-	cd $@ && git checkout 643cab2e0d5154130077df6356e53871f3b0fa84
-
-setup_test_deps: deps/mini.nvim deps/nvim-treesitter deps/copilot.lua deps/render-markdown deps/nui.nvim deps/img-clip deps/plenary.nvim deps/todomvc
+setup_test_deps: deps/mini.nvim deps/nvim-treesitter deps/copilot.lua deps/render-markdown deps/nui.nvim deps/img-clip deps/plenary.nvim

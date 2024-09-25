@@ -44,3 +44,6 @@ temp/
 config.personal.lua
 
 target
+
+# If you install dependencies for testing, you should ignore them too
+deps/
