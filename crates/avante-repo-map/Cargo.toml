@@ -27,13 +27,13 @@ tree-sitter-cpp = "0.23"
 tree-sitter-lua = "0.2"
 tree-sitter-ruby = "0.23"
 tree-sitter-zig = "1.0.2"
+lancedb = "0.10.0"
+arrow = { version = "52.2", optional = false }
+fastembed = "4.1.0"
+avante-tokenizers = { path = "../avante-tokenizers" }
 
 [lints]
 workspace = true
 
 [features]
-lua51 = ["mlua/lua51"]
-lua52 = ["mlua/lua52"]
-lua53 = ["mlua/lua53"]
-lua54 = ["mlua/lua54"]
 luajit = ["mlua/luajit"]

@@ -1,6 +1,10 @@
+use avante_tokenizers::{encode, from_pretrained, State};
+use fastembed::TextEmbedding;
+use fastembed::{RerankInitOptions, RerankerModel, TextRerank};
 use mlua::prelude::*;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use tree_sitter::{Node, Parser, Query, QueryCursor};
 use tree_sitter_language::LanguageFn;
 
@@ -900,21 +904,100 @@ fn stringify_union(union_def: &Union) -> String {
     format!("{res}}};")
 }
 
+fn stringify_definition(definition: &Definition) -> String {
+    match definition {
+        Definition::Class(class) => stringify_class(class),
+        Definition::Enum(enum_def) => stringify_enum(enum_def),
+        Definition::Union(union_def) => stringify_union(union_def),
+        Definition::Func(func) => stringify_function(func),
+        Definition::Variable(variable) => {
+            let variable_str = stringify_variable(variable);
+            variable_str
+        }
+    }
+}
+
+fn vector_stringify_definitions(definitions: &[Definition]) -> Vec<String> {
+    definitions.iter().map(stringify_definition).collect()
+}
+
 fn stringify_definitions(definitions: &Vec<Definition>) -> String {
     let mut res = String::new();
     for definition in definitions {
-        match definition {
-            Definition::Class(class) => res = format!("{res}{}", stringify_class(class)),
-            Definition::Enum(enum_def) => res = format!("{res}{}", stringify_enum(enum_def)),
-            Definition::Union(union_def) => res = format!("{res}{}", stringify_union(union_def)),
-            Definition::Func(func) => res = format!("{res}{}", stringify_function(func)),
-            Definition::Variable(variable) => {
-                let variable_str = stringify_variable(variable);
-                res = format!("{res}{variable_str}");
-            }
-        }
+        res = format!("{res}{}", stringify_definition(definition));
     }
     res
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot_product = a.iter().zip(b.iter()).map(|(a, b)| a * b).sum::<f32>();
+    let magnitude_a = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let magnitude_b = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    dot_product / (magnitude_a * magnitude_b)
+}
+
+fn get_ranked_definitions(
+    state: &State,
+    query: &str,
+    language: &str,
+    source: &str,
+    max_tokens: usize,
+) -> LuaResult<String> {
+    let definitions =
+        extract_definitions(language, source).map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+    // Convert the definitions to embeddings
+    let vector_str_definitions = vector_stringify_definitions(&definitions);
+    let embedding_model = TextEmbedding::try_new(Default::default())
+        .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+    let query_embedding = embedding_model
+        .embed([query].to_vec(), None)
+        .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+    let embeddings = embedding_model
+        .embed(vector_str_definitions, None)
+        .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+    // Cosine similarity for retrieval
+    let mut similarities = Vec::new();
+    for (i, embedding) in embeddings.iter().enumerate() {
+        let similarity = cosine_similarity(&query_embedding[0], embedding);
+        similarities.push((similarity, &vector_str_definitions[i]));
+    }
+    // Sort the similarities in descending order
+    similarities.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    // Calculate the number of definitions to retrieve and rerank
+    let n_retrievals = max_tokens / 4;
+    let n_rerankables = n_retrievals * 2;
+    // Get the top n_rerankable definitions from the sorted similarities
+    let rerankable_documents: Vec<&str> = similarities
+        .into_iter()
+        .take(n_rerankables)
+        .map(|(_, doc)| doc.as_str()) // No clone needed since we have ownership
+        .collect();
+    // Rerank the definitions
+    let reranker_model =
+        TextRerank::try_new(RerankInitOptions::new(RerankerModel::JINARerankerV1TurboEn))
+            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+    let reranked_definitions = reranker_model
+        .rerank(query, rerankable_documents, true, None)
+        .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+    // Collect the definitions up to max_tokens using the tokenizer
+    let mut res_definitions = Vec::new();
+    let mut total_tokens = 0;
+    for rerank_result in reranked_definitions.iter() {
+        if let Some(document) = &rerank_result.document {
+            // Calculate tokens using the encode method
+            let (_, _, num_tokens) = encode(state, document)
+                .map_err(|e| LuaError::RuntimeError(format!("Failed to encode text: {}", e)))?;
+
+            if total_tokens + num_tokens > max_tokens {
+                break;
+            }
+            res_definitions.push(document.clone());
+            total_tokens += num_tokens;
+        }
+    }
+    // Combine the selected definitions into a single string
+    let result = res_definitions.join("\n");
+    Ok(result)
 }
 
 pub fn get_definitions_string(language: &str, source: &str) -> LuaResult<String> {
@@ -924,14 +1007,40 @@ pub fn get_definitions_string(language: &str, source: &str) -> LuaResult<String>
     Ok(stringified)
 }
 
+pub fn setup_tokenizer(state: &State, model: &str) -> LuaResult<()> {
+    from_pretrained(&state, model);
+
+    Ok(())
+}
+
 #[mlua::lua_module]
 fn avante_repo_map(lua: &Lua) -> LuaResult<LuaTable> {
+    let state = Arc::new(State::new());
+
     let exports = lua.create_table()?;
     exports.set(
         "stringify_definitions",
         lua.create_function(move |_, (language, source): (String, String)| {
             get_definitions_string(language.as_str(), source.as_str())
         })?,
+    )?;
+    exports.set(
+        "stringify_ranked_definitions",
+        lua.create_function(
+            move |_, (query, language, source, max_tokens): (String, String, String, usize)| {
+                get_ranked_definitions(
+                    &state,
+                    query.as_str(),
+                    language.as_str(),
+                    source.as_str(),
+                    max_tokens,
+                )
+            },
+        )?,
+    )?;
+    exports.set(
+        "setup_tokenizer",
+        lua.create_function(move |_, model: String| setup_tokenizer(&state, model.as_str()))?,
     )?;
     Ok(exports)
 }

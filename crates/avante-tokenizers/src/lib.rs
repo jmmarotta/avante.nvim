@@ -49,19 +49,19 @@ enum TokenizerType {
     HuggingFace(HuggingFaceTokenizer),
 }
 
-struct State {
+pub struct State {
     tokenizer: Mutex<Option<TokenizerType>>,
 }
 
 impl State {
-    fn new() -> Self {
+    pub fn new() -> Self {
         State {
             tokenizer: Mutex::new(None),
         }
     }
 }
 
-fn encode(state: &State, text: &str) -> LuaResult<(Vec<usize>, usize, usize)> {
+pub fn encode(state: &State, text: &str) -> LuaResult<(Vec<usize>, usize, usize)> {
     let tokenizer = state.tokenizer.lock().unwrap();
     match tokenizer.as_ref() {
         Some(TokenizerType::Tiktoken(tokenizer)) => Ok(tokenizer.encode(text)),
@@ -72,7 +72,7 @@ fn encode(state: &State, text: &str) -> LuaResult<(Vec<usize>, usize, usize)> {
     }
 }
 
-fn from_pretrained(state: &State, model: &str) {
+pub fn from_pretrained(state: &State, model: &str) {
     let mut tokenizer_mutex = state.tokenizer.lock().unwrap();
     *tokenizer_mutex = Some(match model {
         "gpt-4o" => TokenizerType::Tiktoken(Tiktoken::new(model)),
